@@ -368,76 +368,201 @@ const Icon=({name,size=16})=>{
 };
 
 /* ItemShape: stand=rect, access=diamond, service=circle */
-function ItemShape({item,selected,hovered,readOnly,onMD,onDbl,onCtx,onResizeStart}){
-  const fc=item.color||FAMILIES[item.family]?.color||"#7a2035";
-  const cx=item.x+item.w/2,cy=item.y+item.h/2;
-  const isSel=selected,isH=hovered;
-  const handles=isSel&&!readOnly?[
-    {hx:item.x,hy:item.y,c:"nw"},{hx:cx,hy:item.y,c:"n"},{hx:item.x+item.w,hy:item.y,c:"ne"},
-    {hx:item.x+item.w,hy:cy,c:"e"},{hx:item.x+item.w,hy:item.y+item.h,c:"se"},
-    {hx:cx,hy:item.y+item.h,c:"s"},{hx:item.x,hy:item.y+item.h,c:"sw"},{hx:item.x,hy:cy,c:"w"}
-  ]:[];
-  const gProps={
-    style:{cursor:readOnly?"pointer":"move"},
-    onMouseDown:e=>{e.stopPropagation();onMD&&onMD(e);},
-    onDoubleClick:e=>{e.stopPropagation();onDbl&&onDbl();},
-    onContextMenu:e=>{e.preventDefault();e.stopPropagation();onCtx&&onCtx(e);},
-  };
-  const shortName=n=>n.length>13?n.slice(0,13)+"…":n;
-  const H=handles.map(({hx,hy,c})=>(
-    <rect key={c} x={hx-4} y={hy-4} width="8" height="8" rx="2" fill="#fff" stroke={fc} strokeWidth="1.5"
-      style={{cursor:`${c}-resize`}} onMouseDown={e=>{e.stopPropagation();onResizeStart&&onResizeStart(c,e);}}/>
-  ));
-  if(item.family==="access"){
-    const pts=`${cx},${item.y} ${item.x+item.w},${cy} ${cx},${item.y+item.h} ${item.x},${cy}`;
-    return(<g {...gProps}>
-      {isSel&&<polygon points={pts} fill="none" stroke={fc} strokeWidth="1" strokeDasharray="4,3" opacity=".35"
-        transform={`scale(1.12) translate(${(cx*(1-1/1.12)).toFixed(2)},${(cy*(1-1/1.12)).toFixed(2)})`}/>}
-      <polygon points={pts} fill={isSel?hx(fc,.28):isH?hx(fc,.2):hx(fc,.12)} stroke={isSel?"#7a2035":fc} strokeWidth={isSel?2.5:isH?2:1.5}/>
-      <text x={cx} y={cy-7} textAnchor="middle" dominantBaseline="middle" fontSize="15">{item.icon}</text>
-      <text x={cx} y={cy+9} textAnchor="middle" fill={isSel?"#1e1a17":"#6b5f57"} fontSize="8" fontFamily="DM Sans" fontWeight="500">{shortName(item.name)}</text>
-      {H}
-    </g>);
-  }
-  if(item.family==="service"){
-    const rx=item.w/2,ry=item.h/2;
-    return(<g {...gProps}>
-      {isSel&&<ellipse cx={cx} cy={cy} rx={rx+5} ry={ry+5} fill="none" stroke={fc} strokeWidth="1" strokeDasharray="4,3" opacity=".35"/>}
-      <ellipse cx={cx} cy={cy} rx={rx} ry={ry} fill={isSel?hx(fc,.28):isH?hx(fc,.2):hx(fc,.12)} stroke={isSel?"#7a2035":fc} strokeWidth={isSel?2.5:isH?2:1.5}/>
-      <text x={cx} y={cy-7} textAnchor="middle" dominantBaseline="middle" fontSize="15">{item.icon}</text>
-      <text x={cx} y={cy+9} textAnchor="middle" fill={isSel?"#1e1a17":"#6b5f57"} fontSize="8" fontFamily="DM Sans" fontWeight="500">{shortName(item.name)}</text>
-      {H}
-    </g>);
-  }
-  return(<g {...gProps}>
-    {isSel&&<rect x={item.x-3} y={item.y-3} width={item.w+6} height={item.h+6} rx="9" fill="none" stroke="#7a2035" strokeWidth="1" strokeDasharray="5,3" opacity=".45"/>}
-    <rect x={item.x} y={item.y} width={item.w} height={item.h} rx="6" fill={isSel?hx(fc,.28):isH?hx(fc,.18):hx(fc,.1)} stroke={isSel?"#7a2035":fc} strokeWidth={isSel?2.5:isH?2:1.5}/>
-    <text x={cx} y={item.y+22} textAnchor="middle" fill={fc} fontSize="15">{item.logo||item.icon}</text>
-    <text x={cx} y={item.y+37} textAnchor="middle" fill={isSel?"#1e1a17":"#6b5f57"} fontSize="9" fontFamily="DM Sans" fontWeight="500">{shortName(item.name)}</text>
-    {item.number&&<text x={cx} y={item.y+49} textAnchor="middle" fill={fc} fontSize="8" fontFamily="DM Sans">{item.number}</text>}
-    {item.events?.length>0&&<circle cx={item.x+item.w-8} cy={item.y+8} r="5" fill="#7a2035"/>}
-    {H}
-  </g>);
+/* ── Isometric helpers ─────────────────────────────────────────────────────
+   We use a simple 2:1 isometric projection.
+   isoTop(x,y,w,h)  → parallelogram for the top face
+   isoFront(x,y,w,h,depth) → front face rectangle in iso
+   isoSide(x,y,w,h,depth)  → right-side face in iso
+   depth = apparent height of the extrusion in px
+*/
+const ISO_DX = 0.5;   // x shift per unit y (isometric shear)
+const ISO_DY = 0.25;  // y shift per unit y
+const ISO_DEP = 14;   // default extrusion depth
+
+// Convert flat (cx,cy) rect centre to iso top-face polygon
+function isoTopPts(x, y, w, h) {
+  // corners of flat rect mapped to isometric top face
+  const tl = [x         + y*ISO_DX,         y*ISO_DY];
+  const tr = [x+w       + y*ISO_DX,         y*ISO_DY];
+  const br = [x+w       + (y+h)*ISO_DX, (y+h)*ISO_DY];
+  const bl = [x         + (y+h)*ISO_DX, (y+h)*ISO_DY];
+  return [tl,tr,br,bl].map(p=>p.join(",")).join(" ");
+}
+function isoFrontPts(x, y, w, h, dep) {
+  // bottom-left and bottom-right of top face, dropped by dep
+  const bl = [x         + (y+h)*ISO_DX, (y+h)*ISO_DY];
+  const br = [x+w       + (y+h)*ISO_DX, (y+h)*ISO_DY];
+  return [
+    bl,
+    br,
+    [br[0], br[1]+dep],
+    [bl[0], bl[1]+dep],
+  ].map(p=>p.join(",")).join(" ");
+}
+function isoSidePts(x, y, w, h, dep) {
+  // right face
+  const tr = [x+w + y*ISO_DX,     y*ISO_DY];
+  const br = [x+w + (y+h)*ISO_DX, (y+h)*ISO_DY];
+  return [
+    tr,
+    br,
+    [br[0], br[1]+dep],
+    [tr[0], tr[1]+dep],
+  ].map(p=>p.join(",")).join(" ");
+}
+// Top-face centre (for text/icon placement)
+function isoCentre(x, y, w, h) {
+  const cx = x + w/2;
+  const cy = y + h/2;
+  return [cx + cy*ISO_DX, cy*ISO_DY];
 }
 
-/* App */
-class ErrorBoundary extends React.Component{
-  constructor(props){super(props);this.state={hasError:false,error:null};}
-  static getDerivedStateFromError(e){return{hasError:true,error:e};}
-  componentDidCatch(e,info){console.error("EXPOConnect error:",e,info);}
-  render(){
-    if(this.state.hasError){
-      return(<div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",height:"100vh",background:"#f5f2ee",gap:16,padding:24}}>
-        <div style={{fontSize:40}}>⚠️</div>
-        <div style={{fontFamily:"Cormorant Garamond,serif",fontSize:24,color:"#7a2035"}}>Une erreur est survenue</div>
-        <div style={{fontSize:13,color:"#6b5f57",textAlign:"center",maxWidth:400}}>{this.state.error?.message||"Erreur inconnue"}</div>
-        <button onClick={()=>this.setState({hasError:false,error:null})} style={{padding:"10px 24px",background:"#7a2035",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontSize:14,fontFamily:"DM Sans,sans-serif"}}>
-          ↺ Réessayer
-        </button>
-      </div>);
-    }
-    return this.props.children;
+function ItemShape({item,selected,hovered,readOnly,onMD,onDbl,onCtx,onResizeStart}){
+  const fc = item.color || FAMILIES[item.family]?.color || "#7a2035";
+  const isSel = selected, isH = hovered;
+  const dep = isSel ? 18 : isH ? 16 : ISO_DEP;
+
+  // Lighten/darken helpers for faces
+  const topFill   = isH || isSel ? hx(fc, .30) : hx(fc, .18);
+  const frontFill = isH || isSel ? hx(fc, .50) : hx(fc, .35);
+  const sideFill  = isH || isSel ? hx(fc, .40) : hx(fc, .26);
+  const strokeCol = isSel ? "#7a2035" : isH ? fc : fc;
+  const strokeW   = isSel ? 2 : isH ? 1.5 : 1;
+
+  const gProps = {
+    style:{cursor: readOnly ? "pointer" : "move"},
+    onMouseDown: e=>{e.stopPropagation(); onMD&&onMD(e);},
+    onDoubleClick: e=>{e.stopPropagation(); onDbl&&onDbl();},
+    onContextMenu: e=>{e.preventDefault(); e.stopPropagation(); onCtx&&onCtx(e);},
+  };
+
+  const {x,y,w,h} = item;
+  const shortName = n => n.length>13 ? n.slice(0,13)+"…" : n;
+  const [icx, icy] = isoCentre(x, y, w, h);
+
+  // 8 resize handles on the top face corners (editor only)
+  const handlePos = [
+    isoCentre(x,   y,   0, 0),
+    isoCentre(x+w, y,   0, 0),
+    isoCentre(x+w, y+h, 0, 0),
+    isoCentre(x,   y+h, 0, 0),
+    isoCentre(x+w/2, y,   0, 0),
+    isoCentre(x+w,   y+h/2, 0, 0),
+    isoCentre(x+w/2, y+h, 0, 0),
+    isoCentre(x,     y+h/2, 0, 0),
+  ];
+  const handleKeys = ["nw","ne","se","sw","n","e","s","w"];
+  const handles = isSel && !readOnly ? handleKeys.map((c,i) => (
+    <rect key={c} x={handlePos[i][0]-4} y={handlePos[i][1]-4} width="8" height="8" rx="2"
+      fill="#fff" stroke="#7a2035" strokeWidth="1.5"
+      style={{cursor:`${c}-resize`}}
+      onMouseDown={e=>{e.stopPropagation(); onResizeStart&&onResizeStart(c,e);}}/>
+  )) : [];
+
+  /* ── STAND : isometric box ── */
+  if(item.family === "stand") {
+    const shadowPts = [
+      `${x+(y+h)*ISO_DX+4},${(y+h)*ISO_DY+dep+4}`,
+      `${x+w+(y+h)*ISO_DX+4},${(y+h)*ISO_DY+dep+4}`,
+      `${x+w+(y)*ISO_DX+4},${(y)*ISO_DY+dep+4}`,
+      `${x+w+(y)*ISO_DX+14},${(y)*ISO_DY+dep+14}`,
+      `${x+w+(y+h)*ISO_DX+14},${(y+h)*ISO_DY+dep+14}`,
+      `${x+(y+h)*ISO_DX+14},${(y+h)*ISO_DY+dep+14}`,
+    ].join(" ");
+    return(
+      <g {...gProps}>
+        {/* Shadow */}
+        <polygon points={shadowPts} fill="rgba(0,0,0,.10)" style={{filter:"blur(3px)"}}/>
+        {/* Side face (right) */}
+        <polygon points={isoSidePts(x,y,w,h,dep)} fill={sideFill} stroke={strokeCol} strokeWidth={strokeW} strokeLinejoin="round"/>
+        {/* Front face (bottom) */}
+        <polygon points={isoFrontPts(x,y,w,h,dep)} fill={frontFill} stroke={strokeCol} strokeWidth={strokeW} strokeLinejoin="round"/>
+        {/* Top face */}
+        <polygon points={isoTopPts(x,y,w,h)} fill={topFill} stroke={strokeCol} strokeWidth={strokeW} strokeLinejoin="round"/>
+        {/* Selection outline on top */}
+        {isSel&&<polygon points={isoTopPts(x-3,y-3,w+6,h+6)} fill="none" stroke="#7a2035" strokeWidth="1" strokeDasharray="4,3" opacity=".6"/>}
+        {/* Icon */}
+        <text x={icx} y={icy-3} textAnchor="middle" dominantBaseline="middle" fontSize="14">{item.logo||item.icon}</text>
+        {/* Name */}
+        <text x={icx} y={icy+12} textAnchor="middle" fill={isSel?"#1e1a17":"#3a3030"} fontSize="8" fontFamily="DM Sans" fontWeight="600">{shortName(item.name)}</text>
+        {/* Stand number */}
+        {item.number&&<text x={icx} y={icy+22} textAnchor="middle" fill={fc} fontSize="7" fontFamily="DM Sans">{item.number}</text>}
+        {/* Event dot */}
+        {item.events?.length>0&&<circle cx={x+w+(y)*ISO_DX-2} cy={(y)*ISO_DY-2} r="5" fill="#7a2035"/>}
+        {handles}
+      </g>
+    );
   }
+
+  /* ── CIRCULATION : isometric diamond/prism ── */
+  if(item.family === "access") {
+    const cx2 = x+w/2, cy2 = y+h/2;
+    // Diamond points on iso top
+    const dTop   = [cx2 + y*ISO_DX,        y*ISO_DY];
+    const dRight = [x+w + cy2*ISO_DX,     cy2*ISO_DY];
+    const dBot   = [cx2 + (y+h)*ISO_DX,   (y+h)*ISO_DY];
+    const dLeft  = [x   + cy2*ISO_DX,     cy2*ISO_DY];
+    const topPts = [dTop,dRight,dBot,dLeft].map(p=>p.join(",")).join(" ");
+    // Front prism face (bottom-left to bottom-right)
+    const frontPts = [
+      dLeft.join(","),
+      dBot.join(","),
+      [dBot[0], dBot[1]+dep].join(","),
+      [dLeft[0],dLeft[1]+dep].join(","),
+    ].join(" ");
+    const sidePts2 = [
+      dRight.join(","),
+      dBot.join(","),
+      [dBot[0], dBot[1]+dep].join(","),
+      [dRight[0],dRight[1]+dep].join(","),
+    ].join(" ");
+    const shadowCx = dBot[0]+6, shadowCy = dBot[1]+dep+6;
+    return(
+      <g {...gProps}>
+        <ellipse cx={shadowCx} cy={shadowCy} rx={w*0.45} ry={dep*0.4} fill="rgba(0,0,0,.12)" style={{filter:"blur(3px)"}}/>
+        <polygon points={sidePts2}  fill={sideFill}  stroke={strokeCol} strokeWidth={strokeW} strokeLinejoin="round"/>
+        <polygon points={frontPts}  fill={frontFill} stroke={strokeCol} strokeWidth={strokeW} strokeLinejoin="round"/>
+        <polygon points={topPts}    fill={topFill}   stroke={strokeCol} strokeWidth={strokeW} strokeLinejoin="round"/>
+        {isSel&&<polygon points={topPts} fill="none" stroke="#7a2035" strokeWidth="1" strokeDasharray="4,3" opacity=".5" transform="scale(1.08)" style={{transformOrigin:`${icx}px ${icy}px`}}/>}
+        <text x={icx} y={icy-3} textAnchor="middle" dominantBaseline="middle" fontSize="13">{item.icon}</text>
+        <text x={icx} y={icy+11} textAnchor="middle" fill={isSel?"#1e1a17":"#3a3030"} fontSize="8" fontFamily="DM Sans" fontWeight="600">{shortName(item.name)}</text>
+        {handles}
+      </g>
+    );
+  }
+
+  /* ── SERVICE : isometric cylinder ── */
+  if(item.family === "service") {
+    const rx = w/2, ry = Math.max(h*0.25, 10);
+    const [ecx, ecy] = isoCentre(x, y, w, h);
+    // Cylinder body (rectangle under the ellipse)
+    const bodyLeft  = ecx - rx + y*ISO_DX*0.5;
+    const bodyRight = ecx + rx + y*ISO_DX*0.5;
+    const topEcy    = ecy;
+    const bodyPts = [
+      `${bodyLeft},${topEcy}`,
+      `${bodyRight},${topEcy}`,
+      `${bodyRight},${topEcy+dep}`,
+      `${bodyLeft},${topEcy+dep}`,
+    ].join(" ");
+    return(
+      <g {...gProps}>
+        {/* Shadow */}
+        <ellipse cx={ecx+5} cy={topEcy+dep+5} rx={rx*0.85} ry={ry*0.5} fill="rgba(0,0,0,.12)" style={{filter:"blur(3px)"}}/>
+        {/* Cylinder body */}
+        <polygon points={bodyPts} fill={frontFill} stroke={strokeCol} strokeWidth={strokeW}/>
+        {/* Bottom ellipse cap */}
+        <ellipse cx={ecx} cy={topEcy+dep} rx={rx} ry={ry} fill={sideFill} stroke={strokeCol} strokeWidth={strokeW}/>
+        {/* Top ellipse */}
+        <ellipse cx={ecx} cy={topEcy} rx={rx} ry={ry} fill={topFill} stroke={strokeCol} strokeWidth={strokeW}/>
+        {isSel&&<ellipse cx={ecx} cy={topEcy} rx={rx+4} ry={ry+3} fill="none" stroke="#7a2035" strokeWidth="1" strokeDasharray="4,3" opacity=".5"/>}
+        <text x={ecx} y={topEcy-3} textAnchor="middle" dominantBaseline="middle" fontSize="13">{item.icon}</text>
+        <text x={ecx} y={topEcy+10} textAnchor="middle" fill={isSel?"#1e1a17":"#3a3030"} fontSize="8" fontFamily="DM Sans" fontWeight="600">{shortName(item.name)}</text>
+        {handles}
+      </g>
+    );
+  }
+  return null;
 }
 
 
@@ -707,11 +832,23 @@ function MapView({stands,access,services,halls,onItemClick,onHallClick}){
         style={{transform:`translate(${tx}px,${ty}px) scale(${ts})`,transformOrigin:"0 0",display:"block",userSelect:"none"}}>
         <rect width={CANVAS_W} height={CANVAS_H} fill="#ece8e2" rx="4"/>
         <rect width={CANVAS_W} height={CANVAS_H} fill="none" stroke="#b0a090" strokeWidth="2" rx="4"/>
-        {halls.map(h=><g key={h.id} style={{cursor:"pointer"}} onClick={()=>onHallClick&&onHallClick(h.id)}>
-          <rect x={h.x} y={h.y} width={h.w} height={h.h} fill={h.color} stroke={h.border} strokeWidth="1.5" rx="8" strokeDasharray="5,3"/>
-          <text x={h.x+10} y={h.y+20} fill={h.border} fontSize="13" fontWeight="700" fontFamily="Cormorant Garamond" opacity=".8">{h.name}</text>
-          <text x={h.x+h.w-10} y={h.y+20} fill={h.border} fontSize="9" textAnchor="end" fontFamily="DM Sans" opacity=".6">{stands.filter(s=>s.hall===h.id).length} stands</text>
-        </g>)}
+        {halls.map(h=>{
+          const hfc=h.border;
+          const floorDep=6;
+          // iso floor: shift the rect slightly to give depth illusion
+          const fx=h.x, fy=h.y, fw=h.w, fh=h.h;
+          const topPts=isoTopPts(fx,fy,fw,fh);
+          const frontPts=isoFrontPts(fx,fy,fw,fh,floorDep);
+          const sidePts=isoSidePts(fx,fy,fw,fh,floorDep);
+          const [lcx]=isoCentre(fx,fy,fw,fh);
+          return(<g key={h.id} style={{cursor:"pointer"}} onClick={()=>onHallClick&&onHallClick(h.id)}>
+            <polygon points={frontPts} fill={hx(hfc,.14)} stroke={hfc} strokeWidth="1" strokeLinejoin="round" strokeDasharray="4,3"/>
+            <polygon points={sidePts}  fill={hx(hfc,.10)} stroke={hfc} strokeWidth="1" strokeLinejoin="round" strokeDasharray="4,3"/>
+            <polygon points={topPts}   fill={h.color}     stroke={hfc} strokeWidth="1.5" strokeLinejoin="round" strokeDasharray="5,3"/>
+            <text x={fx+12+(fy+8)*ISO_DX} y={(fy+8)*ISO_DY} fill={hfc} fontSize="13" fontWeight="700" fontFamily="Cormorant Garamond" opacity=".85">{h.name}</text>
+            <text x={fx+fw-10+(fy+8)*ISO_DX} y={(fy+8)*ISO_DY} fill={hfc} fontSize="9" textAnchor="end" fontFamily="DM Sans" opacity=".6">{stands.filter(s=>s.hall===h.id).length} stands</text>
+          </g>);
+        })}
         <rect x={CANVAS_W/2-60} y={CANVAS_H-50} width="120" height="32" rx="5" fill="#7a203520" stroke="#7a203550"/>
         <text x={CANVAS_W/2} y={CANVAS_H-28} fill="#7a2035" fontSize="11" textAnchor="middle" fontFamily="DM Sans" fontWeight="500">ENTRÉE</text>
         <polygon points={`${CANVAS_W/2-12},${CANVAS_H-51} ${CANVAS_W/2+12},${CANVAS_H-51} ${CANVAS_W/2},${CANVAS_H-63}`} fill="#7a203580"/>
@@ -1341,6 +1478,22 @@ function ConfirmModal({msg,onConfirm,onClose}){return(<div className="modal-over
   <div className="modal-body"><div style={{color:"var(--text2)",fontSize:14,lineHeight:1.6,marginBottom:6}}>{msg}</div><div style={{fontSize:12,color:"var(--text3)"}}>Cette action est irréversible.</div></div>
   <div className="modal-footer"><button className="btn-secondary" onClick={onClose}>Annuler</button><button className="btn-danger" style={{padding:"9px 18px"}} onClick={onConfirm}><Icon name="trash" size={14}/> Supprimer</button></div>
 </div></div>);}
+
+class ErrorBoundary extends React.Component{
+  constructor(props){super(props);this.state={hasError:false,error:null};}
+  static getDerivedStateFromError(e){return{hasError:true,error:e};}
+  componentDidCatch(e,info){console.error("EXPOConnect error:",e,info);}
+  render(){
+    if(this.state.hasError){return(
+      <div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",height:"100vh",background:"#f5f2ee",gap:16,padding:24}}>
+        <div style={{fontSize:40}}>⚠️</div>
+        <div style={{fontFamily:"Cormorant Garamond,serif",fontSize:24,color:"#7a2035"}}>Une erreur est survenue</div>
+        <div style={{fontSize:13,color:"#6b5f57",textAlign:"center",maxWidth:400}}>{this.state.error?.message||"Erreur inconnue"}</div>
+        <button onClick={()=>this.setState({hasError:false,error:null})} style={{padding:"10px 24px",background:"#7a2035",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontSize:14,fontFamily:"DM Sans,sans-serif"}}>↺ Réessayer</button>
+      </div>);}
+    return this.props.children;
+  }
+}
 
 ReactDOM.createRoot(document.getElementById("root")).render(<ErrorBoundary><App/></ErrorBoundary>);
 </script>
