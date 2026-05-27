@@ -421,6 +421,26 @@ function ItemShape({item,selected,hovered,readOnly,onMD,onDbl,onCtx,onResizeStar
 }
 
 /* App */
+class ErrorBoundary extends React.Component{
+  constructor(props){super(props);this.state={hasError:false,error:null};}
+  static getDerivedStateFromError(e){return{hasError:true,error:e};}
+  componentDidCatch(e,info){console.error("EXPOConnect error:",e,info);}
+  render(){
+    if(this.state.hasError){
+      return(<div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",height:"100vh",background:"#f5f2ee",gap:16,padding:24}}>
+        <div style={{fontSize:40}}>⚠️</div>
+        <div style={{fontFamily:"Cormorant Garamond,serif",fontSize:24,color:"#7a2035"}}>Une erreur est survenue</div>
+        <div style={{fontSize:13,color:"#6b5f57",textAlign:"center",maxWidth:400}}>{this.state.error?.message||"Erreur inconnue"}</div>
+        <button onClick={()=>this.setState({hasError:false,error:null})} style={{padding:"10px 24px",background:"#7a2035",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontSize:14,fontFamily:"DM Sans,sans-serif"}}>
+          ↺ Réessayer
+        </button>
+      </div>);
+    }
+    return this.props.children;
+  }
+}
+
+
 function App(){
   const [stands,setStands]=useState(INITIAL_STANDS);
   const [access,setAccess]=useState(INITIAL_ACCESS);
@@ -577,16 +597,52 @@ function MapView({stands,access,services,halls,onItemClick,onHallClick}){
   const [tr,setTr]=useState({x:0,y:0,scale:1});
   const [hov,setHov]=useState(null);
   const drag=useRef(null);const pinch=useRef(null);
-  const cS=s=>Math.min(4,Math.max(.3,s));
-  const onWheel=useCallback(e=>{e.preventDefault();setTr(t=>({...t,scale:cS(t.scale*(e.deltaY>0?.9:1.1))}));},[]);
+  // Safe clamper: rejects NaN/Infinity
+  const safeNum=(v,fallback=0)=>(!isFinite(v)||isNaN(v))?fallback:v;
+  const cS=s=>{const v=safeNum(s,1);return Math.min(4,Math.max(.25,v));};
+  const safeTr=t=>({x:safeNum(t.x,0),y:safeNum(t.y,0),scale:cS(safeNum(t.scale,1))});
+  const onWheel=useCallback(e=>{
+    e.preventDefault();
+    setTr(t=>{const ns=cS(t.scale*(e.deltaY>0?.9:1.1));return safeTr({...t,scale:ns});});
+  },[]);
   useEffect(()=>{const el=wrapRef.current;if(!el)return;el.addEventListener("wheel",onWheel,{passive:false});return()=>el.removeEventListener("wheel",onWheel);},[onWheel]);
-  const onMD=e=>{drag.current={sx:e.clientX-tr.x,sy:e.clientY-tr.y};};
-  const onMM=e=>{if(!drag.current)return;setTr(t=>({...t,x:e.clientX-drag.current.sx,y:e.clientY-drag.current.sy}));};
-  const onMU=()=>{drag.current=null;};
-  const onTS=e=>{if(e.touches.length===1)drag.current={sx:e.touches[0].clientX-tr.x,sy:e.touches[0].clientY-tr.y};else if(e.touches.length===2){drag.current=null;const dx=e.touches[0].clientX-e.touches[1].clientX,dy=e.touches[0].clientY-e.touches[1].clientY;pinch.current={dist:Math.sqrt(dx*dx+dy*dy),scale:tr.scale};}};
-  const onTM=e=>{e.preventDefault();if(e.touches.length===1&&drag.current)setTr(t=>({...t,x:e.touches[0].clientX-drag.current.sx,y:e.touches[0].clientY-drag.current.sy}));else if(e.touches.length===2&&pinch.current){const dx=e.touches[0].clientX-e.touches[1].clientX,dy=e.touches[0].clientY-e.touches[1].clientY;setTr(t=>({...t,scale:cS(pinch.current.scale*(Math.sqrt(dx*dx+dy*dy)/pinch.current.dist))}));}};
-  const onTE=()=>{drag.current=null;pinch.current=null;};
-  const zoom=d=>setTr(t=>({...t,scale:cS(t.scale*(d>0?1.25:.8))}));
+  // Pointer events for unified mouse+touch handling
+  const onPD=useCallback(e=>{
+    if(e.pointerType==="touch"&&e.isPrimary===false)return;
+    e.currentTarget.setPointerCapture(e.pointerId);
+    drag.current={sx:e.clientX-tr.x,sy:e.clientY-tr.y,id:e.pointerId};
+  },[tr]);
+  const onPM=useCallback(e=>{
+    if(!drag.current||drag.current.id!==e.pointerId)return;
+    setTr(t=>safeTr({...t,x:e.clientX-drag.current.sx,y:e.clientY-drag.current.sy}));
+  },[]);
+  const onPU=useCallback(()=>{drag.current=null;},[]);
+  // Touch pinch (native touch events for 2-finger)
+  const onTS=useCallback(e=>{
+    if(e.touches.length===2){
+      drag.current=null;
+      const dx=e.touches[0].clientX-e.touches[1].clientX;
+      const dy=e.touches[0].clientY-e.touches[1].clientY;
+      const dist=Math.sqrt(dx*dx+dy*dy);
+      if(dist>0) pinch.current={dist,scale:tr.scale};
+    }
+  },[tr]);
+  const onTM=useCallback(e=>{
+    if(e.touches.length===2&&pinch.current&&pinch.current.dist>0){
+      e.preventDefault();
+      const dx=e.touches[0].clientX-e.touches[1].clientX;
+      const dy=e.touches[0].clientY-e.touches[1].clientY;
+      const dist=Math.sqrt(dx*dx+dy*dy);
+      if(dist>0) setTr(t=>safeTr({...t,scale:cS(pinch.current.scale*(dist/pinch.current.dist))}));
+    }
+  },[]);
+  const onTE=useCallback(()=>{pinch.current=null;},[]);
+  useEffect(()=>{
+    const el=wrapRef.current;if(!el)return;
+    el.addEventListener("touchmove",onTM,{passive:false});
+    return()=>el.removeEventListener("touchmove",onTM);
+  },[onTM]);
+  const zoom=d=>setTr(t=>safeTr({...t,scale:cS(t.scale*(d>0?1.25:.8))}));
   const isH=(f,id)=>hov&&hov.f===f&&hov.id===id;
   const all=[...stands,...access,...services];
   const hovItem=hov?all.find(i=>i.family===hov.f&&i.id===hov.id):null;
@@ -602,7 +658,7 @@ function MapView({stands,access,services,halls,onItemClick,onHallClick}){
       </div>
       <div className="map-hint">🤏 Pinch pour zoomer · Glisser pour naviguer · Double-clic pour voir le détail</div>
     </div>
-    <div className="map-svg-wrap" ref={wrapRef} onMouseDown={onMD} onMouseMove={onMM} onMouseUp={onMU} onMouseLeave={onMU} onTouchStart={onTS} onTouchMove={onTM} onTouchEnd={onTE}>
+    <div className="map-svg-wrap" ref={wrapRef} onPointerDown={onPD} onPointerMove={onPM} onPointerUp={onPU} onPointerLeave={onPU} onTouchStart={onTS} onTouchEnd={onTE}>
       <svg width={CANVAS_W} height={CANVAS_H} style={{transform:`translate(${tr.x}px,${tr.y}px) scale(${tr.scale})`,transformOrigin:"0 0",display:"block",userSelect:"none"}}>
         <rect width={CANVAS_W} height={CANVAS_H} fill="#ece8e2" rx="4"/>
           <rect width={CANVAS_W} height={CANVAS_H} fill="none" stroke="#b0a090" strokeWidth="2" rx="4"/>
@@ -1240,7 +1296,7 @@ function ConfirmModal({msg,onConfirm,onClose}){return(<div className="modal-over
   <div className="modal-footer"><button className="btn-secondary" onClick={onClose}>Annuler</button><button className="btn-danger" style={{padding:"9px 18px"}} onClick={onConfirm}><Icon name="trash" size={14}/> Supprimer</button></div>
 </div></div>);}
 
-ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+ReactDOM.createRoot(document.getElementById("root")).render(<ErrorBoundary><App/></ErrorBoundary>);
 </script>
 </body>
 </html>
