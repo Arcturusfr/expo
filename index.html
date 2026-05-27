@@ -594,58 +594,101 @@ function ItemDetail({item,onBack}){
 
 function MapView({stands,access,services,halls,onItemClick,onHallClick}){
   const wrapRef=useRef(null);
-  const [tr,setTr]=useState({x:0,y:0,scale:1});
+  const svgRef=useRef(null);
   const [hov,setHov]=useState(null);
-  const drag=useRef(null);const pinch=useRef(null);
-  // Safe clamper: rejects NaN/Infinity
-  const safeNum=(v,fallback=0)=>(!isFinite(v)||isNaN(v))?fallback:v;
-  const cS=s=>{const v=safeNum(s,1);return Math.min(4,Math.max(.25,v));};
-  const safeTr=t=>({x:safeNum(t.x,0),y:safeNum(t.y,0),scale:cS(safeNum(t.scale,1))});
+  // All transform state in a ref to avoid stale closures
+  const trRef=useRef({x:0,y:0,scale:1});
+  const [trDisplay,setTrDisplay]=useState({x:0,y:0,scale:1});
+  const drag=useRef(null);
+  const pinch=useRef(null);
+
+  const SCALE_MIN=0.25, SCALE_MAX=4;
+  const safe=(v,fb=0)=>(typeof v==="number"&&isFinite(v)&&!isNaN(v))?v:fb;
+  const clampScale=s=>Math.min(SCALE_MAX,Math.max(SCALE_MIN,safe(s,1)));
+
+  const applyTr=(nx,ny,ns)=>{
+    const t={x:safe(nx,trRef.current.x),y:safe(ny,trRef.current.y),scale:clampScale(ns)};
+    trRef.current=t;
+    setTrDisplay({...t});
+  };
+
+  // Wheel zoom
   const onWheel=useCallback(e=>{
     e.preventDefault();
-    setTr(t=>{const ns=cS(t.scale*(e.deltaY>0?.9:1.1));return safeTr({...t,scale:ns});});
+    const factor=e.deltaY<0?1.1:0.9;
+    const t=trRef.current;
+    applyTr(t.x,t.y,t.scale*factor);
   },[]);
-  useEffect(()=>{const el=wrapRef.current;if(!el)return;el.addEventListener("wheel",onWheel,{passive:false});return()=>el.removeEventListener("wheel",onWheel);},[onWheel]);
-  // Pointer events for unified mouse+touch handling
-  const onPD=useCallback(e=>{
-    if(e.pointerType==="touch"&&e.isPrimary===false)return;
-    e.currentTarget.setPointerCapture(e.pointerId);
-    drag.current={sx:e.clientX-tr.x,sy:e.clientY-tr.y,id:e.pointerId};
-  },[tr]);
-  const onPM=useCallback(e=>{
-    if(!drag.current||drag.current.id!==e.pointerId)return;
-    setTr(t=>safeTr({...t,x:e.clientX-drag.current.sx,y:e.clientY-drag.current.sy}));
+  useEffect(()=>{
+    const el=wrapRef.current;if(!el)return;
+    el.addEventListener("wheel",onWheel,{passive:false});
+    return()=>el.removeEventListener("wheel",onWheel);
+  },[onWheel]);
+
+  // Mouse events (desktop)
+  const onMouseDown=useCallback(e=>{
+    if(e.button!==0)return;
+    drag.current={type:"mouse",sx:e.clientX-trRef.current.x,sy:e.clientY-trRef.current.y};
   },[]);
-  const onPU=useCallback(()=>{drag.current=null;},[]);
-  // Touch pinch (native touch events for 2-finger)
-  const onTS=useCallback(e=>{
-    if(e.touches.length===2){
+  const onMouseMove=useCallback(e=>{
+    if(!drag.current||drag.current.type!=="mouse")return;
+    applyTr(e.clientX-drag.current.sx,e.clientY-drag.current.sy,trRef.current.scale);
+  },[]);
+  const onMouseUp=useCallback(()=>{drag.current=null;},[]);
+
+  // Touch events (mobile) — fully separated from mouse
+  const onTouchStart=useCallback(e=>{
+    if(e.touches.length===1){
+      drag.current={type:"touch",sx:e.touches[0].clientX-trRef.current.x,sy:e.touches[0].clientY-trRef.current.y};
+      pinch.current=null;
+    } else if(e.touches.length===2){
       drag.current=null;
       const dx=e.touches[0].clientX-e.touches[1].clientX;
       const dy=e.touches[0].clientY-e.touches[1].clientY;
       const dist=Math.sqrt(dx*dx+dy*dy);
-      if(dist>0) pinch.current={dist,scale:tr.scale};
+      if(dist>1) pinch.current={dist,scale:trRef.current.scale,cx:(e.touches[0].clientX+e.touches[1].clientX)/2,cy:(e.touches[0].clientY+e.touches[1].clientY)/2};
     }
-  },[tr]);
-  const onTM=useCallback(e=>{
-    if(e.touches.length===2&&pinch.current&&pinch.current.dist>0){
-      e.preventDefault();
+  },[]);
+  const onTouchMove=useCallback(e=>{
+    e.preventDefault();
+    if(e.touches.length===1&&drag.current?.type==="touch"){
+      applyTr(e.touches[0].clientX-drag.current.sx,e.touches[0].clientY-drag.current.sy,trRef.current.scale);
+    } else if(e.touches.length===2&&pinch.current){
       const dx=e.touches[0].clientX-e.touches[1].clientX;
       const dy=e.touches[0].clientY-e.touches[1].clientY;
       const dist=Math.sqrt(dx*dx+dy*dy);
-      if(dist>0) setTr(t=>safeTr({...t,scale:cS(pinch.current.scale*(dist/pinch.current.dist))}));
+      if(dist>1){
+        const ns=clampScale(pinch.current.scale*(dist/pinch.current.dist));
+        applyTr(trRef.current.x,trRef.current.y,ns);
+      }
     }
   },[]);
-  const onTE=useCallback(()=>{pinch.current=null;},[]);
+  const onTouchEnd=useCallback(e=>{
+    if(e.touches.length===0){drag.current=null;pinch.current=null;}
+    else if(e.touches.length===1){
+      pinch.current=null;
+      drag.current={type:"touch",sx:e.touches[0].clientX-trRef.current.x,sy:e.touches[0].clientY-trRef.current.y};
+    }
+  },[]);
   useEffect(()=>{
     const el=wrapRef.current;if(!el)return;
-    el.addEventListener("touchmove",onTM,{passive:false});
-    return()=>el.removeEventListener("touchmove",onTM);
-  },[onTM]);
-  const zoom=d=>setTr(t=>safeTr({...t,scale:cS(t.scale*(d>0?1.25:.8))}));
+    el.addEventListener("touchmove",onTouchMove,{passive:false});
+    el.addEventListener("touchstart",onTouchStart,{passive:true});
+    el.addEventListener("touchend",onTouchEnd,{passive:true});
+    return()=>{
+      el.removeEventListener("touchmove",onTouchMove);
+      el.removeEventListener("touchstart",onTouchStart);
+      el.removeEventListener("touchend",onTouchEnd);
+    };
+  },[onTouchMove,onTouchStart,onTouchEnd]);
+
+  const zoom=d=>applyTr(trRef.current.x,trRef.current.y,trRef.current.scale*(d>0?1.25:0.8));
+  const reset=()=>applyTr(0,0,1);
+
   const isH=(f,id)=>hov&&hov.f===f&&hov.id===id;
   const all=[...stands,...access,...services];
   const hovItem=hov?all.find(i=>i.family===hov.f&&i.id===hov.id):null;
+  const {x:tx,y:ty,scale:ts}=trDisplay;
   return(<div className="map-container">
     <div className="map-toolbar">
       <div className="map-toolbar-left">
@@ -653,47 +696,54 @@ function MapView({stands,access,services,halls,onItemClick,onHallClick}){
         <div className="zoom-btns">
           <button className="zoom-btn" onClick={()=>zoom(1)}>＋</button>
           <button className="zoom-btn" onClick={()=>zoom(-1)}>－</button>
-          <button className="zoom-btn" onClick={()=>setTr({x:0,y:0,scale:1})}>⊙</button>
+          <button className="zoom-btn" onClick={reset}>⊙</button>
         </div>
       </div>
-      <div className="map-hint">🤏 Pinch pour zoomer · Glisser pour naviguer · Double-clic pour voir le détail</div>
+      <div className="map-hint">🤏 Pinch pour zoomer · Glisser pour naviguer · Double-clic pour le détail</div>
     </div>
-    <div className="map-svg-wrap" ref={wrapRef} onPointerDown={onPD} onPointerMove={onPM} onPointerUp={onPU} onPointerLeave={onPU} onTouchStart={onTS} onTouchEnd={onTE}>
-      <svg width={CANVAS_W} height={CANVAS_H} style={{transform:`translate(${tr.x}px,${tr.y}px) scale(${tr.scale})`,transformOrigin:"0 0",display:"block",userSelect:"none"}}>
+    <div className="map-svg-wrap" ref={wrapRef}
+      onMouseDown={onMouseDown} onMouseMove={onMouseMove} onMouseUp={onMouseUp} onMouseLeave={onMouseUp}>
+      <svg ref={svgRef} width={CANVAS_W} height={CANVAS_H}
+        style={{transform:`translate(${tx}px,${ty}px) scale(${ts})`,transformOrigin:"0 0",display:"block",userSelect:"none"}}>
         <rect width={CANVAS_W} height={CANVAS_H} fill="#ece8e2" rx="4"/>
-          <rect width={CANVAS_W} height={CANVAS_H} fill="none" stroke="#b0a090" strokeWidth="2" rx="4"/>
-        {halls.map(h=><g key={h.id} style={{cursor:"pointer"}} onClick={()=>onHallClick&&onHallClick(h.id)}><rect x={h.x} y={h.y} width={h.w} height={h.h} fill={h.color} stroke={h.border} strokeWidth="1.5" rx="8" strokeDasharray="5,3"/><text x={h.x+10} y={h.y+20} fill={h.border} fontSize="13" fontWeight="700" fontFamily="Cormorant Garamond" opacity=".8">{h.name}</text><text x={h.x+h.w-10} y={h.y+20} fill={h.border} fontSize="9" textAnchor="end" fontFamily="DM Sans" opacity=".6">{stands.filter(s=>s.hall===h.id).length} stands</text></g>)}
+        <rect width={CANVAS_W} height={CANVAS_H} fill="none" stroke="#b0a090" strokeWidth="2" rx="4"/>
+        {halls.map(h=><g key={h.id} style={{cursor:"pointer"}} onClick={()=>onHallClick&&onHallClick(h.id)}>
+          <rect x={h.x} y={h.y} width={h.w} height={h.h} fill={h.color} stroke={h.border} strokeWidth="1.5" rx="8" strokeDasharray="5,3"/>
+          <text x={h.x+10} y={h.y+20} fill={h.border} fontSize="13" fontWeight="700" fontFamily="Cormorant Garamond" opacity=".8">{h.name}</text>
+          <text x={h.x+h.w-10} y={h.y+20} fill={h.border} fontSize="9" textAnchor="end" fontFamily="DM Sans" opacity=".6">{stands.filter(s=>s.hall===h.id).length} stands</text>
+        </g>)}
         <rect x={CANVAS_W/2-60} y={CANVAS_H-50} width="120" height="32" rx="5" fill="#7a203520" stroke="#7a203550"/>
         <text x={CANVAS_W/2} y={CANVAS_H-28} fill="#7a2035" fontSize="11" textAnchor="middle" fontFamily="DM Sans" fontWeight="500">ENTRÉE</text>
         <polygon points={`${CANVAS_W/2-12},${CANVAS_H-51} ${CANVAS_W/2+12},${CANVAS_H-51} ${CANVAS_W/2},${CANVAS_H-63}`} fill="#7a203580"/>
         {all.map(item=>(
           <g key={`${item.family}-${item.id}`}
-            onMouseEnter={()=>setHov({f:item.family,id:item.id})} onMouseLeave={()=>setHov(null)}>
+            onMouseEnter={()=>setHov({f:item.family,id:item.id})}
+            onMouseLeave={()=>setHov(null)}>
             <ItemShape item={item} hovered={isH(item.family,item.id)} readOnly={true}
               onDbl={()=>onItemClick(item.family,item.id)}
               onMD={()=>{}} onCtx={()=>{}}/>
           </g>
         ))}
         {hovItem&&(()=>{
-          const cx=hovItem.x+hovItem.w/2,ty=Math.max(4,hovItem.y-46),tx=Math.min(cx,CANVAS_W-72);
+          const cx=hovItem.x+hovItem.w/2,ty2=Math.max(4,hovItem.y-46),tx2=Math.min(cx,CANVAS_W-72);
           const fc=hovItem.color||FAMILIES[hovItem.family]?.color||"#7a2035";
           return(<g>
-            <rect x={tx-68} y={ty} width="136" height="38" rx="6" fill="#fff" stroke="#e0d9d1" style={{filter:"drop-shadow(0 2px 6px rgba(120,80,60,.14))"}}/>
-            <text x={tx} y={ty+14} textAnchor="middle" fill="#1e1a17" fontSize="10" fontFamily="DM Sans" fontWeight="500">{hovItem.name}</text>
-            <text x={tx} y={ty+28} textAnchor="middle" fill={fc} fontSize="9" fontFamily="DM Sans">{FAMILIES[hovItem.family]?.label}{hovItem.subtype?` · ${hovItem.subtype}`:""}</text>
+            <rect x={tx2-68} y={ty2} width="136" height="38" rx="6" fill="#fff" stroke="#e0d9d1" style={{filter:"drop-shadow(0 2px 6px rgba(120,80,60,.14))"}}/>
+            <text x={tx2} y={ty2+14} textAnchor="middle" fill="#1e1a17" fontSize="10" fontFamily="DM Sans" fontWeight="500">{hovItem.name}</text>
+            <text x={tx2} y={ty2+28} textAnchor="middle" fill={fc} fontSize="9" fontFamily="DM Sans">{FAMILIES[hovItem.family]?.label}{hovItem.subtype?` · ${hovItem.subtype}`:""}</text>
           </g>);
         })()}
       </svg>
     </div>
     <div className="map-legend-wrap">
       <div className="map-legend-group">
-        <div className="map-legend-title">Stands</div>
-        <div className="map-legend-items">{stands.map(s=><div key={s.id} className="legend-item" onClick={()=>onItemClick("stand",s.id)}><div className="legend-dot" style={{background:s.color}}/>{s.number} {s.name}</div>)}</div>
+        <div className="map-legend-title" style={{color:"#5a4a3a"}}>Halls</div>
+        <div className="map-legend-items">{halls.map(h=><div key={h.id} className="legend-item" onClick={()=>onHallClick&&onHallClick(h.id)}><div className="legend-dot" style={{background:h.border,borderRadius:3}}/>{h.name}</div>)}</div>
       </div>
       <div style={{width:1,background:"var(--border)",alignSelf:"stretch",margin:"0 6px"}}/>
       <div className="map-legend-group">
-        <div className="map-legend-title" style={{color:"#5a4a3a"}}>Halls</div>
-        <div className="map-legend-items">{halls.map(h=><div key={h.id} className="legend-item" onClick={()=>onHallClick&&onHallClick(h.id)}><div className="legend-dot" style={{background:h.border,borderRadius:3}}/>{h.name}</div>)}</div>
+        <div className="map-legend-title">Stands</div>
+        <div className="map-legend-items">{stands.map(s=><div key={s.id} className="legend-item" onClick={()=>onItemClick("stand",s.id)}><div className="legend-dot" style={{background:s.color}}/>{s.number} {s.name}</div>)}</div>
       </div>
       <div style={{width:1,background:"var(--border)",alignSelf:"stretch",margin:"0 6px"}}/>
       <div className="map-legend-group">
@@ -708,18 +758,13 @@ function MapView({stands,access,services,halls,onItemClick,onHallClick}){
     </div>
   </div>);}
 
+
 function HallDetail({hall,stands,access,services,onBack,onItemClick}){
   if(!hall)return null;
   const bc=hall.border||"#1a6fa8";
   const hallStands=stands.filter(s=>s.hall===hall.id);
-  const hallServices=services.filter(s=>{
-    const cx=s.x+s.w/2,cy=s.y+s.h/2;
-    return cx>=hall.x&&cx<=hall.x+hall.w&&cy>=hall.y&&cy<=hall.y+hall.h;
-  });
-  const hallAccess=access.filter(a=>{
-    const cx=a.x+a.w/2,cy=a.y+a.h/2;
-    return cx>=hall.x&&cx<=hall.x+hall.w&&cy>=hall.y&&cy<=hall.y+hall.h;
-  });
+  const hallServices=services.filter(s=>{const cx=s.x+s.w/2,cy=s.y+s.h/2;return cx>=hall.x&&cx<=hall.x+hall.w&&cy>=hall.y&&cy<=hall.y+hall.h;});
+  const hallAccess=access.filter(a=>{const cx=a.x+a.w/2,cy=a.y+a.h/2;return cx>=hall.x&&cx<=hall.x+hall.w&&cy>=hall.y&&cy<=hall.y+hall.h;});
   return(<div className="detail-panel">
     <div className="detail-hero">
       <button className="detail-back" onClick={onBack}><Icon name="back" size={14}/> Retour au plan</button>
@@ -764,10 +809,11 @@ function HallDetail({hall,stands,access,services,onBack,onItemClick}){
         </div>
       </div>}
       {hallStands.length===0&&hallAccess.length===0&&hallServices.length===0&&(
-        <div className="empty-state"><div className="empty-state-icon">🏛️</div><div className="empty-state-text">Ce hall ne contient aucun élément pour le moment.</div></div>
+        <div className="empty-state"><div className="empty-state-icon">🏛️</div><div className="empty-state-text">Ce hall ne contient aucun élément.</div></div>
       )}
     </div>
   </div>);}
+
 
 function AgendaView({stands,onStandClick}){
   const all=stands.flatMap(s=>s.events.map(ev=>({...ev,sn:s.name,si:s.id,sc:s.color})));
